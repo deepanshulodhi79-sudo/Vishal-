@@ -9,7 +9,7 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// 🔑 Hardcoded login
+// 🔑 Hardcoded login (Updated as per your request)
 const HARD_USERNAME = "Vishal Baba";
 const HARD_PASSWORD = "Baba882@#";
 
@@ -70,12 +70,12 @@ async function sendBatch(transporter, mails, batchSize = 5) {
     results.push(...settled);
 
     // Small pause between batches to avoid Gmail rate-limit
-    await delay(200); // 0.2 sec pause
+    await delay(200);
   }
   return results;
 }
 
-// ✅ Bulk Mail Sender with fast batch sending
+// ✅ Bulk Mail Sender
 app.post('/send', requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipients, subject, message } = req.body;
@@ -88,11 +88,10 @@ app.post('/send', requireAuth, async (req, res) => {
       .map(r => r.trim())
       .filter(r => r);
 
-    if (recipientList.length === 0) {
+    if (!recipientList.length) {
       return res.json({ success: false, message: "No valid recipients" });
     }
 
-    // ✅ Single transporter
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
@@ -100,7 +99,6 @@ app.post('/send', requireAuth, async (req, res) => {
       auth: { user: email, pass: password }
     });
 
-    // Prepare mails
     const mails = recipientList.map(r => ({
       from: `"${senderName || 'Anonymous'}" <${email}>`,
       to: r,
@@ -108,14 +106,12 @@ app.post('/send', requireAuth, async (req, res) => {
       text: message || ""
     }));
 
-    // Send mails in batches (parallel within batch)
-    await sendBatch(transporter, mails, 5); // 5 mails parallel
+    await sendBatch(transporter, mails, 5);
 
     return res.json({ success: true, message: `✅ Mail sent to ${recipientList.length}` });
-
-  } catch (err) {
-    console.error("Send error:", err);
-    return res.json({ success: false, message: err.message });
+  } catch (error) {
+    console.error("Send error:", error);
+    return res.json({ success: false, message: error.message });
   }
 });
 
