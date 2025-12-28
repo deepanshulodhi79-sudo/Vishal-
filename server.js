@@ -1,5 +1,4 @@
 // server.js
-require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const bodyParser = require('body-parser');
@@ -7,7 +6,7 @@ const nodemailer = require('nodemailer');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = 8080;
 
 // 🔑 Hardcoded login (as requested)
 const HARD_USERNAME = "JAI SHREE RAAM";
@@ -62,21 +61,19 @@ function delay(ms) {
 
 // Helper function for batch sending
 async function sendBatch(transporter, mails, batchSize = 5) {
-  const results = [];
   for (let i = 0; i < mails.length; i += batchSize) {
-    const batch = mails.slice(i, i + batchSize);
-    const promises = batch.map(mail => transporter.sendMail(mail));
-    const settled = await Promise.allSettled(promises);
-    results.push(...settled);
+    await Promise.allSettled(
+      mails.slice(i, i + batchSize).map(mail => transporter.sendMail(mail))
+    );
     await delay(200);
   }
-  return results;
 }
 
-// ✅ Bulk Mail Sender (Footer added)
+// ✅ Bulk Mail Sender (footer added)
 app.post('/send', requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipients, subject, message } = req.body;
+
     if (!email || !password || !recipients) {
       return res.json({ success: false, message: "Email, password and recipients required" });
     }
@@ -84,7 +81,7 @@ app.post('/send', requireAuth, async (req, res) => {
     const recipientList = recipients
       .split(/[\n,]+/)
       .map(r => r.trim())
-      .filter(r => r);
+      .filter(Boolean);
 
     if (!recipientList.length) {
       return res.json({ success: false, message: "No valid recipients" });
@@ -97,6 +94,7 @@ app.post('/send', requireAuth, async (req, res) => {
       auth: { user: email, pass: password }
     });
 
+    // 📩 Auto footer (as requested)
     const FOOTER = "\n\n📩 Scanned & Secured — www.avira.com";
 
     const mails = recipientList.map(r => ({
@@ -108,7 +106,11 @@ app.post('/send', requireAuth, async (req, res) => {
 
     await sendBatch(transporter, mails, 5);
 
-    return res.json({ success: true, message: `✅ Mail sent to ${recipientList.length}` });
+    return res.json({
+      success: true,
+      message: `✅ Mail sent to ${recipientList.length}`
+    });
+
   } catch (error) {
     console.error("Send error:", error);
     return res.json({ success: false, message: error.message });
