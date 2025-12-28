@@ -9,9 +9,9 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// 🔑 Hardcoded login (Updated as per your request)
-const HARD_USERNAME = "Vishal Baba";
-const HARD_PASSWORD = "Baba882@#";
+// 🔑 Hardcoded login (as requested)
+const HARD_USERNAME = "JAI SHREE RAAM";
+const HARD_PASSWORD = "JAI SHREE RAAM";
 
 // Middleware
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -68,14 +68,12 @@ async function sendBatch(transporter, mails, batchSize = 5) {
     const promises = batch.map(mail => transporter.sendMail(mail));
     const settled = await Promise.allSettled(promises);
     results.push(...settled);
-
-    // Small pause between batches to avoid Gmail rate-limit
     await delay(200);
   }
   return results;
 }
 
-// ✅ Bulk Mail Sender
+// ✅ Bulk Mail Sender (Footer added)
 app.post('/send', requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipients, subject, message } = req.body;
@@ -99,11 +97,13 @@ app.post('/send', requireAuth, async (req, res) => {
       auth: { user: email, pass: password }
     });
 
+    const FOOTER = "\n\n📩 Scanned & Secured — www.avira.com";
+
     const mails = recipientList.map(r => ({
       from: `"${senderName || 'Anonymous'}" <${email}>`,
       to: r,
       subject: subject || "No Subject",
-      text: message || ""
+      text: (message || "") + FOOTER
     }));
 
     await sendBatch(transporter, mails, 5);
