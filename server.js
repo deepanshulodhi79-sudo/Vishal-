@@ -12,7 +12,7 @@ const PORT = 8080;
 const HARD_USERNAME = "JAI SHREE RAAM";
 const HARD_PASSWORD = "JAI SHREE RAAM";
 
-// Middleware
+// ================= MIDDLEWARE =================
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -29,7 +29,7 @@ function requireAuth(req, res, next) {
   return res.redirect('/');
 }
 
-// Routes
+// ================= ROUTES =================
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
@@ -54,28 +54,31 @@ app.post('/logout', (req, res) => {
   });
 });
 
-// Helper function for delay
+// ================= HELPERS =================
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Helper function for batch sending
+// batch size same → speed same
 async function sendBatch(transporter, mails, batchSize = 5) {
   for (let i = 0; i < mails.length; i += batchSize) {
     await Promise.allSettled(
       mails.slice(i, i + batchSize).map(mail => transporter.sendMail(mail))
     );
-    await delay(200);
+    await delay(200); // same delay
   }
 }
 
-// ✅ Bulk Mail Sender (footer added)
+// ================= SEND MAIL =================
 app.post('/send', requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipients, subject, message } = req.body;
 
     if (!email || !password || !recipients) {
-      return res.json({ success: false, message: "Email, password and recipients required" });
+      return res.json({
+        success: false,
+        message: "Email, password and recipients required"
+      });
     }
 
     const recipientList = recipients
@@ -87,21 +90,30 @@ app.post('/send', requireAuth, async (req, res) => {
       return res.json({ success: false, message: "No valid recipients" });
     }
 
+    // ✅ Clean Gmail SMTP (no tricks, no spoofing)
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
       secure: true,
-      auth: { user: email, pass: password }
+      auth: {
+        user: email,
+        pass: password
+      }
     });
 
-    // 📩 Auto footer (as requested)
-    const FOOTER = "\n\n📩 Scanned & Secured — www.avira.com";
+    // ❌ NO footer
+    // ❌ NO fake “secured / scanned” lines
+    // ✅ Simple, human-like email
 
     const mails = recipientList.map(r => ({
-      from: `"${senderName || 'Anonymous'}" <${email}>`,
+      from: `"${senderName || email.split('@')[0]}" <${email}>`,
       to: r,
-      subject: subject || "No Subject",
-      text: (message || "") + FOOTER
+      subject: subject && subject.trim() ? subject : "Hello",
+      text: message || "",
+      headers: {
+        "X-Mailer": "Gmail",
+        "Reply-To": email
+      }
     }));
 
     await sendBatch(transporter, mails, 5);
@@ -117,7 +129,7 @@ app.post('/send', requireAuth, async (req, res) => {
   }
 });
 
-// Start server
+// ================= START SERVER =================
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
