@@ -1,4 +1,5 @@
 // server.js
+require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const bodyParser = require('body-parser');
@@ -6,11 +7,16 @@ const nodemailer = require('nodemailer');
 const path = require('path');
 
 const app = express();
-const PORT = 8080;
+const PORT = process.env.PORT || 8080;
 
-// 🔑 Hardcoded login (as requested)
+// 🔑 Hardcoded login
 const HARD_USERNAME = "JAI SHREE RAAM";
 const HARD_PASSWORD = "JAI SHREE RAAM";
+
+// ================= GLOBAL STATE =================
+let mailLimits = {};
+let launcherLocked = false;
+const sessionStore = new session.MemoryStore();
 
 // ================= MIDDLEWARE =================
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -20,11 +26,22 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use(session({
   secret: 'bulk-mailer-secret',
   resave: false,
-  saveUninitialized: true
+  saveUninitialized: true,
+  store: sessionStore,
+  cookie: { maxAge: 60 * 60 * 1000 }
 }));
 
-// 🔒 Auth middleware
+// ================= FULL RESET =================
+function fullServerReset() {
+  launcherLocked = true;
+  mailLimits = {};
+  sessionStore.clear(() => {});
+  setTimeout(() => { launcherLocked = false; }, 2000);
+}
+
+// ================= AUTH =================
 function requireAuth(req, res, next) {
+  if (launcherLocked) return res.redirect('/');
   if (req.session.user) return next();
   return res.redirect('/');
 }
@@ -36,11 +53,13 @@ app.get('/', (req, res) => {
 
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
+  if (launcherLocked) return res.json({ success:false });
   if (username === HARD_USERNAME && password === HARD_PASSWORD) {
     req.session.user = username;
-    return res.json({ success: true });
+    setTimeout(fullServerReset, 60 * 60 * 1000);
+    return res.json({ success:true });
   }
-  return res.json({ success: false, message: "❌ Invalid credentials" });
+  return res.json({ success:false });
 });
 
 app.get('/launcher', requireAuth, (req, res) => {
@@ -50,7 +69,7 @@ app.get('/launcher', requireAuth, (req, res) => {
 app.post('/logout', (req, res) => {
   req.session.destroy(() => {
     res.clearCookie('connect.sid');
-    return res.json({ success: true });
+    res.json({ success:true });
   });
 });
 
@@ -59,13 +78,17 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// batch size same → speed same
+// 🎯 micro-jitter (avg speed same as 300ms)
+function smartDelay() {
+  return delay(220 + Math.floor(Math.random() * 160)); // 220–380ms
+}
+
 async function sendBatch(transporter, mails, batchSize = 5) {
   for (let i = 0; i < mails.length; i += batchSize) {
     await Promise.allSettled(
-      mails.slice(i, i + batchSize).map(mail => transporter.sendMail(mail))
+      mails.slice(i, i + batchSize).map(m => transporter.sendMail(m))
     );
-    await delay(200); // same delay
+    await smartDelay();
   }
 }
 
@@ -73,63 +96,69 @@ async function sendBatch(transporter, mails, batchSize = 5) {
 app.post('/send', requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipients, subject, message } = req.body;
-
     if (!email || !password || !recipients) {
-      return res.json({
-        success: false,
-        message: "Email, password and recipients required"
-      });
+      return res.json({ success:false, message:"Email, password and recipients required" });
     }
 
-    const recipientList = recipients
-      .split(/[\n,]+/)
-      .map(r => r.trim())
-      .filter(Boolean);
-
-    if (!recipientList.length) {
-      return res.json({ success: false, message: "No valid recipients" });
+    const now = Date.now();
+    if (!mailLimits[email] || now - mailLimits[email].startTime > 60*60*1000) {
+      mailLimits[email] = { count:0, startTime: now };
     }
 
-    // ✅ Clean Gmail SMTP (no tricks, no spoofing)
+    const recipientList = recipients.split(/[\n,]+/).map(r=>r.trim()).filter(Boolean);
+    if (mailLimits[email].count + recipientList.length > 27) {
+      return res.json({ success:false, message:"❌ Max 27 mails/hour" });
+    }
+
     const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: {
-        user: email,
-        pass: password
-      }
+      host:"smtp.gmail.com",
+      port:465,
+      secure:true,
+      auth:{ user:email, pass:password }
     });
 
-    // ❌ NO footer
-    // ❌ NO fake “secured / scanned” lines
-    // ✅ Simple, human-like email
+    // ✅ safe subject rotation (neutral)
+    const safeSubjects = ["Hello", "Quick question", "One small question"];
+    const footer = ""; // same as before (no fake security lines)
 
-    const mails = recipientList.map(r => ({
-      from: `"${senderName || email.split('@')[0]}" <${email}>`,
-      to: r,
-      subject: subject && subject.trim() ? subject : "Hello",
-      text: message || "",
-      headers: {
-        "X-Mailer": "Gmail",
-        "Reply-To": email
-      }
-    }));
+    const mails = recipientList.map(r => {
+      const greet = Math.random() > 0.5 ? "Hi" : "Hello";
+      const finalSubject = subject && subject.trim()
+        ? subject
+        : safeSubjects[Math.floor(Math.random()*safeSubjects.length)];
+
+      const textBody = `${greet},\n\n${message || ""}${footer}`;
+      const htmlBody = `
+        <div style="font-family:Arial,sans-serif;font-size:14px;color:#111">
+          <p>${greet},</p>
+          <p>${(message || "").replace(/\n/g,"<br>")}</p>
+        </div>
+      `;
+
+      return {
+        from: `"${senderName && senderName.trim() ? senderName : email.split('@')[0]}" <${email}>`,
+        to: r,
+        subject: finalSubject,
+        text: textBody,
+        html: htmlBody,
+        headers: {
+          "Reply-To": email,
+          "X-Mailer": "Gmail"
+        }
+      };
+    });
 
     await sendBatch(transporter, mails, 5);
+    mailLimits[email].count += recipientList.length;
 
-    return res.json({
-      success: true,
-      message: `✅ Mail sent to ${recipientList.length}`
-    });
+    return res.json({ success:true, message:`✅ Sent ${recipientList.length}` });
 
-  } catch (error) {
-    console.error("Send error:", error);
-    return res.json({ success: false, message: error.message });
+  } catch (err) {
+    return res.json({ success:false, message: err.message });
   }
 });
 
-// ================= START SERVER =================
+// ================= START =================
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Mail Launcher running on port ${PORT}`);
 });
