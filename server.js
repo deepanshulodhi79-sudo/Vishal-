@@ -74,21 +74,13 @@ app.post('/logout', (req, res) => {
 });
 
 // ================= HELPERS =================
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
-// 🎯 micro-jitter (avg speed same as 300ms)
-function smartDelay() {
-  return delay(220 + Math.floor(Math.random() * 160)); // 220–380ms
-}
-
+// ⚡ INSTANT SEND (NO DELAY)
 async function sendBatch(transporter, mails, batchSize = 5) {
   for (let i = 0; i < mails.length; i += batchSize) {
     await Promise.allSettled(
       mails.slice(i, i + batchSize).map(m => transporter.sendMail(m))
     );
-    await smartDelay();
   }
 }
 
@@ -96,6 +88,7 @@ async function sendBatch(transporter, mails, batchSize = 5) {
 app.post('/send', requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipients, subject, message } = req.body;
+
     if (!email || !password || !recipients) {
       return res.json({ success:false, message:"Email, password and recipients required" });
     }
@@ -105,7 +98,11 @@ app.post('/send', requireAuth, async (req, res) => {
       mailLimits[email] = { count:0, startTime: now };
     }
 
-    const recipientList = recipients.split(/[\n,]+/).map(r=>r.trim()).filter(Boolean);
+    const recipientList = recipients
+      .split(/[\n,]+/)
+      .map(r => r.trim())
+      .filter(Boolean);
+
     if (mailLimits[email].count + recipientList.length > 27) {
       return res.json({ success:false, message:"❌ Max 27 mails/hour" });
     }
@@ -117,36 +114,20 @@ app.post('/send', requireAuth, async (req, res) => {
       auth:{ user:email, pass:password }
     });
 
-    // ✅ safe subject rotation (neutral)
-    const safeSubjects = ["Hello", "Quick question", "One small question"];
-    const footer = ""; // same as before (no fake security lines)
+    // ❌ NO auto greeting
+    // ❌ NO delay
+    // ❌ NO fake footer
 
-    const mails = recipientList.map(r => {
-      const greet = Math.random() > 0.5 ? "Hi" : "Hello";
-      const finalSubject = subject && subject.trim()
-        ? subject
-        : safeSubjects[Math.floor(Math.random()*safeSubjects.length)];
-
-      const textBody = `${greet},\n\n${message || ""}${footer}`;
-      const htmlBody = `
-        <div style="font-family:Arial,sans-serif;font-size:14px;color:#111">
-          <p>${greet},</p>
-          <p>${(message || "").replace(/\n/g,"<br>")}</p>
-        </div>
-      `;
-
-      return {
-        from: `"${senderName && senderName.trim() ? senderName : email.split('@')[0]}" <${email}>`,
-        to: r,
-        subject: finalSubject,
-        text: textBody,
-        html: htmlBody,
-        headers: {
-          "Reply-To": email,
-          "X-Mailer": "Gmail"
-        }
-      };
-    });
+    const mails = recipientList.map(r => ({
+      from: `"${senderName && senderName.trim() ? senderName : email.split('@')[0]}" <${email}>`,
+      to: r,
+      subject: subject && subject.trim() ? subject : "Hello",
+      text: message || "",
+      headers: {
+        "Reply-To": email,
+        "X-Mailer": "Gmail"
+      }
+    }));
 
     await sendBatch(transporter, mails, 5);
     mailLimits[email].count += recipientList.length;
