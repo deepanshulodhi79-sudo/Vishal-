@@ -10,92 +10,153 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 // 🔑 Hardcoded login
-const HARD_USERNAME = "JAI SHREE RAAM";
-const HARD_PASSWORD = "JAI SHREE RAAM";
+const HARD_USERNAME = "vvvvvvvvvvvvvv";
+const HARD_PASSWORD = "vvvvvvvvvvvvvv";
 
-// ================= LIMITS (SAFE) =================
-const HOURLY_LIMIT = 24;   // thoda kam = spam kam
-const DAILY_LIMIT  = 80;   // daily cap
-let stats = {};            // per-sender stats
+// ================= GLOBAL STATE =================
+
+// Per-sender hourly mail limit
+let mailLimits = {};
+
+// Global launcher lock
+let launcherLocked = false;
+
+// Session store
+const sessionStore = new session.MemoryStore();
 
 // ================= MIDDLEWARE =================
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Session (1 hour life)
 app.use(session({
   secret: 'bulk-mailer-secret',
   resave: false,
-  saveUninitialized: true
+  saveUninitialized: true,
+  store: sessionStore,
+  cookie: {
+    maxAge: 60 * 60 * 1000 // 1 hour
+  }
 }));
 
+// ================= FULL RESET =================
+
+function fullServerReset() {
+  console.log("🔁 FULL LAUNCHER RESET");
+
+  launcherLocked = true;
+  mailLimits = {};
+
+  sessionStore.clear(() => {
+    console.log("🧹 All sessions cleared");
+  });
+
+  setTimeout(() => {
+    launcherLocked = false;
+    console.log("✅ Launcher unlocked for fresh login");
+  }, 2000);
+}
+
+// ================= AUTH =================
+
 function requireAuth(req, res, next) {
+  if (launcherLocked) return res.redirect('/');
   if (req.session.user) return next();
   return res.redirect('/');
 }
 
 // ================= ROUTES =================
+
+// Login page
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
+// Login
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
+
+  if (launcherLocked) {
+    return res.json({
+      success: false,
+      message: "⛔ Launcher reset ho raha hai, thodi der baad login karo"
+    });
+  }
+
   if (username === HARD_USERNAME && password === HARD_PASSWORD) {
     req.session.user = username;
+
+    // ⏱️ Full reset after 1 hour
+    setTimeout(fullServerReset, 60 * 60 * 1000);
+
     return res.json({ success: true });
   }
-  return res.json({ success: false });
+
+  return res.json({ success: false, message: "❌ Invalid credentials" });
 });
 
+// Launcher page
 app.get('/launcher', requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'launcher.html'));
 });
 
+// ================= LOGOUT =================
 app.post('/logout', (req, res) => {
   req.session.destroy(() => {
     res.clearCookie('connect.sid');
-    res.json({ success: true });
+    return res.json({
+      success: true,
+      message: "✅ Logged out successfully"
+    });
   });
 });
 
 // ================= HELPERS =================
+
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
-// micro-jitter (average fast)
-function smartDelay() {
-  return delay(120 + Math.floor(Math.random() * 140)); // 120–260ms
-}
 
-async function sendBatch(transporter, mails, batchSize = 3) {
+async function sendBatch(transporter, mails, batchSize = 5) {
   for (let i = 0; i < mails.length; i += batchSize) {
     await Promise.allSettled(
       mails.slice(i, i + batchSize).map(m => transporter.sendMail(m))
     );
-    await smartDelay();
+    await delay(300);
   }
 }
 
 // ================= SEND MAIL =================
+
 app.post('/send', requireAuth, async (req, res) => {
   try {
     const { senderName, email, password, recipients, subject, message } = req.body;
+
     if (!email || !password || !recipients) {
-      return res.json({ success: false, message: "Email, password and recipients required" });
+      return res.json({
+        success: false,
+        message: "Email, password and recipients required"
+      });
     }
 
-    // init stats
     const now = Date.now();
-    if (!stats[email]) stats[email] = { h: 0, d: 0, hs: now, ds: now };
-    if (now - stats[email].hs > 60 * 60 * 1000) { stats[email].h = 0; stats[email].hs = now; }
-    if (now - stats[email].ds > 24 * 60 * 60 * 1000) { stats[email].d = 0; stats[email].ds = now; }
 
-    const list = recipients.split(/[\n,]+/).map(r => r.trim()).filter(Boolean);
-    if (!list.length) return res.json({ success: false, message: "No valid recipients" });
+    // ⏱️ Hourly sender reset
+    if (!mailLimits[email] || now - mailLimits[email].startTime > 60 * 60 * 1000) {
+      mailLimits[email] = { count: 0, startTime: now };
+    }
 
-    if (stats[email].h + list.length > HOURLY_LIMIT ||
-        stats[email].d + list.length > DAILY_LIMIT) {
-      return res.json({ success: false, message: "Sending limit reached" });
+    const recipientList = recipients
+      .split(/[\n,]+/)
+      .map(r => r.trim())
+      .filter(Boolean);
+
+    if (mailLimits[email].count + recipientList.length > 27) {
+      return res.json({
+        success: false,
+        message: `❌ Max 27 mails/hour | Remaining: ${27 - mailLimits[email].count}`
+      });
     }
 
     const transporter = nodemailer.createTransport({
@@ -105,26 +166,27 @@ app.post('/send', requireAuth, async (req, res) => {
       auth: { user: email, pass: password }
     });
 
-    // boring subject = better
-    const finalSubject = (subject && subject.trim()) ? subject : "Quick question";
+    const mails = recipientList.map(r => ({
+      from: `"${senderName || 'Anonymous'}" <${email}>`,
+      to: r,
 
-    const mails = list.map(to => ({
-      from: `"${senderName && senderName.trim() ? senderName : email.split('@')[0]}" <${email}>`,
-      to,
-      subject: finalSubject,
-      // ❌ no auto greeting
-      // ❌ no fake headers
-      // ❌ plain text only
-      text: message || ""
+      // ✅ Re removed + inbox friendly subject
+      subject: subject || "Quick Note",
+
+      text: (message || "")
     }));
 
-    await sendBatch(transporter, mails, 3);
-    stats[email].h += list.length;
-    stats[email].d += list.length;
+    await sendBatch(transporter, mails, 5);
 
-    return res.json({ success: true, message: `Sent ${list.length}` });
-  } catch (e) {
-    return res.json({ success: false, message: e.message });
+    mailLimits[email].count += recipientList.length;
+
+    return res.json({
+      success: true,
+      message: `✅ Sent ${recipientList.length} | Used ${mailLimits[email].count}/27`
+    });
+
+  } catch (err) {
+    return res.json({ success: false, message: err.message });
   }
 });
 
